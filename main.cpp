@@ -2,7 +2,61 @@
 #include <windows.h>
 #include <stdio.h>
 #include "resource.h"
+#include <strsafe.h>
+#include <tchar.h>
 #pragma warning(disable : 4996)
+
+
+// Global variables
+HANDLE hListenerThread;
+HANDLE hCompletionEvent;
+HANDLE hMailSlot;
+
+DWORD WINAPI ListenerThread(LPVOID lpParam) {
+    HWND hWnd = (HWND)lpParam;
+
+    DWORD cbMessage, cMessage, cbRead;
+    BOOL fResult;
+    char lpszBuffer[1024];
+
+    while (1) {
+        // Check for completion request
+        if (WaitForSingleObject(hCompletionEvent, 0) == WAIT_OBJECT_0) {
+            break;
+        }
+
+        // Check for new message
+        fResult = GetMailslotInfo(hMailSlot, NULL, &cbMessage, &cMessage, NULL);
+
+        if (!fResult) {
+            // Handle error
+            return 1;
+        }
+
+        if (cbMessage != MAILSLOT_NO_MESSAGE) {
+            // Create a buffer for the message
+            char* pBuffer = new char[cbMessage];
+            // Read the message from the mailslot
+            fResult = ReadFile(hMailSlot, pBuffer, cbMessage, &cbRead, NULL);
+
+            if (fResult && cbRead > 0) {
+                // Send the message to the main thread using a Windows message
+                SendMessage(GetDlgItem(hWnd, IDC_HUBBUB), WM_SETTEXT, 0, (LPARAM)pBuffer);
+            }
+
+            delete[] pBuffer;
+        }
+
+        // Sleep for a short interval (adjust as needed)
+        Sleep(1000);
+    }
+
+    CloseHandle(hMailSlot);
+
+    return 0;
+}
+
+
 // Ziņojumu apstrādātāja prototips
 BOOL CALLBACK MainWndProc(HWND, UINT, WPARAM, LPARAM);
 // Galvenā funkcija
@@ -19,19 +73,94 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 // Ziņojumu apstrādātājs
 BOOL CALLBACK MainWndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
     switch (Msg) { // pārbaudīt ziņojuma identifikatoru
-    case WM_INITDIALOG: // ja tas ir inicializācijas paziņojums
-        // izpildīt inicializācijas darbības
+    case WM_INITDIALOG: {
+        // Create an event for completion signaling
+        hCompletionEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+        // Create a mailslot
+        hMailSlot = CreateMailslot(("\\\\.\\mailslot\\Shouter"), 0, MAILSLOT_WAIT_FOREVER, NULL);
+
+        // Create the listener thread
+        DWORD dwThreadId;
+        hListenerThread = CreateThread(NULL, 0, ListenerThread, hWnd, 0, &dwThreadId);
+
         return TRUE;
-    case WM_COMMAND: // ja tas ir paziņojums no vadības elementa
+    }
+    case WM_COMMAND: {// ja tas ir paziņojums no vadības elementa
         switch (LOWORD(wParam)) { // pārbaudīt vadības elementa ID
-        case IDOK: // ja bija uzspiesta OK poga
+        case IDCANCEL: {// ja bija uzspiesta OK poga
             DestroyWindow(hWnd); // aizvērt logu
             return TRUE;
         }
+
+                     // IDC_SHOUT button handler
+        case IDC_SHOUT: {
+            WCHAR szComputerName[MAX_COMPUTERNAME_LENGTH + 1];
+            DWORD dwSize = MAX_COMPUTERNAME_LENGTH + 1;
+            GetComputerNameW(szComputerName, &dwSize);
+
+            WCHAR szUserName[MAX_PATH];
+            GetDlgItemTextW(hWnd, IDC_MYNAME, szUserName, MAX_PATH);
+
+            WCHAR szMessage[256];
+            GetDlgItemTextW(hWnd, IDC_MYSCREAM, szMessage, 256);
+
+            WCHAR szFinalMessage[512];
+
+            // Check if the robot is activated
+            if (IsDlgButtonChecked(hWnd, IDC_ROBOT) == BST_CHECKED) {
+                // If the robot is activated, respond with a predefined message
+                StringCbPrintfW(szFinalMessage, sizeof(szFinalMessage), L"%s from %s shout: STOP SPAMMING!!!", szUserName, szComputerName);
+            }
+            else {
+                // Otherwise, use the original shout format
+                StringCbPrintfW(szFinalMessage, sizeof(szFinalMessage), L"%s from %s shout: %s", szUserName, szComputerName, szMessage);
+            }
+
+            // Create a file for the mailbox entry
+            HANDLE hMailbox = CreateFileW(L"\\\\.\\mailslot\\Shouter", GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+            // Send a text message to the mailslot by writing it to the created file
+            DWORD dwBytesWritten;
+            WriteFile(hMailbox, szFinalMessage, sizeof(szFinalMessage), &dwBytesWritten, NULL);
+
+            // Close the file handle
+            CloseHandle(hMailbox);
+
+            return TRUE;
+        }
+
+        case IDC_ROBOT: {
+            if (IsDlgButtonChecked(hWnd, IDC_ROBOT) == BST_CHECKED) {
+                // Activate the robot
+                SendMessage(GetDlgItem(hWnd, IDC_HUBBUB), WM_SETTEXT, 0, (LPARAM)L"Robot activated. It will respond with 'STOP SPAMMING!!!'.");
+            }
+            else {
+                // Deactivate the robot
+                SendMessage(GetDlgItem(hWnd, IDC_HUBBUB), WM_SETTEXT, 0, (LPARAM)L"Robot deactivated.");
+            }
+            return TRUE;
+        }
+        }
+    }
         return FALSE;
-    case WM_DESTROY: // ja tas ir pabeigšanas pieprasījums
-        PostQuitMessage(0); // pabeigt programmu
+    
+    case WM_USER + 1: {
+        char* pBuffer = (char*)wParam;
+        // Write the received text message to the IDC_HUBBUB field
+        SendMessage(GetDlgItem(hWnd, IDC_HUBBUB), WM_SETTEXT, 0, (LPARAM)pBuffer);
+        // Delete the buffer
+        delete[] pBuffer;
         return TRUE;
+    }
+
+    case WM_DESTROY: {// ja tas ir pabeigšanas pieprasījums
+        SetEvent(hCompletionEvent);
+        WaitForSingleObject(hListenerThread, INFINITE);
+        CloseHandle(hCompletionEvent);
+        EndDialog(hWnd, 0);
+        return TRUE;
+    }
     }
     return FALSE;
 }
