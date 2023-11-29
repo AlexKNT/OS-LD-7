@@ -9,6 +9,7 @@
 HANDLE g_hListenerThread = nullptr;
 bool g_bCompletionRequest = false;
 HWND g_hWnd = nullptr;
+bool g_bRobotActivated = false;
 
 // Listener thread function
 DWORD WINAPI ListenerThread(LPVOID lpParam) {
@@ -68,9 +69,13 @@ BOOL CALLBACK MainWndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
             GetDlgItemText(hWnd, IDC_MYSCREAM, szMessage, ARRAYSIZE(szMessage));
 
             wchar_t szShortMessage[1024];
-            StringCbPrintf(szShortMessage, sizeof(szShortMessage), L"%s from %s shout: %s", szUserName, szComputerName, szMessage);
+            StringCbPrintf(szShortMessage, sizeof(szShortMessage), L"%s from %s shout: %s\n", szUserName, szComputerName, szMessage);
 
             SendMessageToMailSlot(szShortMessage);
+            return TRUE;
+        }
+        case IDC_ROBOT: {
+            g_bRobotActivated = IsDlgButtonChecked(hWnd, IDC_ROBOT) == BST_CHECKED;
             return TRUE;
         }
         }
@@ -104,10 +109,18 @@ void ProcessIncomingMessage(wchar_t* pMessage) {
     // Set the text in IDC_HUBBUB
     SetDlgItemText(g_hWnd, IDC_HUBBUB, pMessage);
 
+    if (g_bRobotActivated) {
+        // Check if the incoming message contains a question
+        if (wcsstr(pMessage, L"?") != nullptr) {
+            // If a question is detected, send a robot response
+            wchar_t szRobotResponse[] = L"STOP SPAMMING!!!";
+            SendMessageToMailSlot(szRobotResponse);
+        }
+    }
+
     // Delete the allocated buffer
     delete[] pMessage;
 }
-
 
 // Function to send a text message to the mailslot
 void SendMessageToMailSlot(const wchar_t* pMessage) {
@@ -117,6 +130,7 @@ void SendMessageToMailSlot(const wchar_t* pMessage) {
         DWORD cbWritten;
         WriteFile(hMailSlot, pMessage, (wcslen(pMessage) + 1) * sizeof(wchar_t), &cbWritten, nullptr);
         CloseHandle(hMailSlot);
+        PostMessage(g_hWnd, WM_USER + 1, reinterpret_cast<WPARAM>(_wcsdup(pMessage)), 0);
     }
 }
 
