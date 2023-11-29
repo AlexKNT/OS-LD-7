@@ -101,9 +101,13 @@ BOOL CALLBACK MainWndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
 
 // Function to process incoming message
 void ProcessIncomingMessage(wchar_t* pMessage) {
+    // Set the text in IDC_HUBBUB
     SetDlgItemText(g_hWnd, IDC_HUBBUB, pMessage);
+
+    // Delete the allocated buffer
     delete[] pMessage;
 }
+
 
 // Function to send a text message to the mailslot
 void SendMessageToMailSlot(const wchar_t* pMessage) {
@@ -111,7 +115,7 @@ void SendMessageToMailSlot(const wchar_t* pMessage) {
 
     if (hMailSlot != INVALID_HANDLE_VALUE) {
         DWORD cbWritten;
-        WriteFile(hMailSlot, pMessage, wcslen(pMessage) * sizeof(wchar_t), &cbWritten, nullptr);
+        WriteFile(hMailSlot, pMessage, (wcslen(pMessage) + 1) * sizeof(wchar_t), &cbWritten, nullptr);
         CloseHandle(hMailSlot);
     }
 }
